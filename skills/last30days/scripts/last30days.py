@@ -126,6 +126,123 @@ def save_output(
     return out_path
 
 
+def _archive_root_available(archive_root: Path) -> bool:
+    """Return False for clearly unavailable mounted-volume archive roots.
+
+    This avoids accidentally creating a local directory tree under /Volumes when
+    a NAS or external drive is not mounted. For normal local paths, callers are
+    allowed to create the archive root on demand.
+    """
+    parts = archive_root.expanduser().parts
+    if len(parts) >= 3 and parts[0] == "/" and parts[1] == "Volumes":
+        return Path("/Volumes", parts[2]).exists()
+    return True
+
+
+def _default_archive_spool_dir() -> Path:
+    return Path.home() / ".last30days" / "archive-spool"
+
+
+def _archive_run_slug(report: schema.Report, run_slug: str | None = None) -> str:
+    if run_slug:
+        return run_slug
+    today = datetime.datetime.now().strftime("%Y-%m-%d")
+    return f"{today}__{slugify(report.topic)}"
+
+
+def _archive_summary(report: schema.Report) -> str:
+    counts = {source: len(items) for source, items in report.items_by_source.items()}
+    lines = [
+        f"# last30days archive summary — {report.topic}",
+        "",
+        "## Summary",
+        "This bundle was generated for durable archive and later editorial review.",
+        "",
+        "## Source counts",
+    ]
+    for source in sorted(counts):
+        lines.append(f"- {source}: {counts[source]}")
+    lines.extend(["", "## Top links"])
+    for candidate in report.ranked_candidates[:10]:
+        if candidate.url:
+            lines.append(f"- [{candidate.title}]({candidate.url})")
+        else:
+            lines.append(f"- {candidate.title}")
+    lines.append("")
+    return "\n".join(lines)
+
+
+def write_archive_bundle(
+    report: schema.Report,
+    *,
+    archive_root: str,
+    category: str = "misc",
+    topic_family: str | None = None,
+    topic_detail: str | None = None,
+    run_slug: str | None = None,
+    summary_text: str | None = None,
+    spool_dir: str | None = None,
+) -> Path:
+    """Write a durable archive bundle with raw, summary, metadata, and links.
+
+    The folder shape is:
+      <root>/<category>/<family>/<detail>/runs/<run-slug>/
+
+    If <root> is on a missing /Volumes mount, output is staged in a local spool
+    instead of creating a misleading local NAS path.
+    """
+    intended_root = Path(archive_root).expanduser()
+    root_available = _archive_root_available(intended_root)
+    actual_root = intended_root if root_available else Path(spool_dir).expanduser() if spool_dir else _default_archive_spool_dir()
+
+    safe_category = slugify(category)
+    safe_detail = slugify(topic_detail or report.topic)
+    parts = [actual_root, safe_category]
+    if topic_family:
+        parts.append(Path(slugify(topic_family)))
+    parts.extend([Path(safe_detail), Path("runs"), Path(_archive_run_slug(report, run_slug))])
+    bundle_dir = Path(*parts).resolve()
+    bundle_dir.mkdir(parents=True, exist_ok=True)
+
+    raw_payload = schema.to_dict(report)
+    (bundle_dir / "raw.json").write_text(
+        json.dumps(raw_payload, indent=2, sort_keys=True, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+    (bundle_dir / "summary.ko.md").write_text(
+        summary_text if summary_text is not None else _archive_summary(report),
+        encoding="utf-8",
+    )
+
+    counts = {source: len(items) for source, items in report.items_by_source.items()}
+    metadata = {
+        "topic": report.topic,
+        "category": safe_category,
+        "topic_family": slugify(topic_family) if topic_family else None,
+        "topic_detail": safe_detail,
+        "run_slug": _archive_run_slug(report, run_slug),
+        "generated_at": report.generated_at,
+        "range_from": report.range_from,
+        "range_to": report.range_to,
+        "source_counts": counts,
+        "ranked_count": len(report.ranked_candidates),
+        "archive_root_available": root_available,
+        "intended_archive_root": str(intended_root),
+        "actual_bundle_dir": str(bundle_dir),
+    }
+    (bundle_dir / "metadata.json").write_text(
+        json.dumps(metadata, indent=2, sort_keys=True, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+
+    links = ["# Links", ""]
+    for candidate in report.ranked_candidates:
+        if candidate.url:
+            links.append(f"- [{candidate.title}]({candidate.url})")
+    (bundle_dir / "links.md").write_text("\n".join(links) + "\n", encoding="utf-8")
+    return bundle_dir
+
+
 def emit_output(
     report: schema.Report,
     emit: str,
@@ -246,6 +363,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--mock", action="store_true", help="Use mock retrieval fixtures")
     parser.add_argument("--diagnose", action="store_true", help="Print provider and source availability")
     parser.add_argument("--save-dir", help="Optional directory for saving the rendered output")
+    parser.add_argument("--archive-dir", help="Write a durable archive bundle under this root (raw.json, summary.ko.md, metadata.json, links.md)")
+    parser.add_argument("--archive-category", default="misc", help="Archive category folder (default: misc)")
+    parser.add_argument("--archive-family", help="Optional archive topic-family folder")
+    parser.add_argument("--archive-topic", help="Optional archive topic-detail folder; defaults to the topic slug")
+    parser.add_argument("--archive-run-slug", help="Optional archive run folder name; defaults to YYYY-MM-DD__topic-slug")
+    parser.add_argument("--archive-spool-dir", help="Fallback local spool root when --archive-dir points at a missing /Volumes mount")
     parser.add_argument("--synthesis-file", help="Markdown synthesis to embed in --emit=html output")
     parser.add_argument("--store", action="store_true", help="Persist ranked findings to the SQLite research store")
     parser.add_argument("--x-handle", help="X handle for targeted supplemental search")
@@ -1027,6 +1150,22 @@ def main() -> int:
                     synthesis_md=synthesis_md,
                 )
                 sys.stderr.write(f"[last30days] Saved output to {peer_path}\n")
+        sys.stderr.flush()
+    if args.archive_dir:
+        summary_text = rendered
+        if args.emit in {"json", "html", "context"}:
+            summary_text = render.render_compact(report, fun_level=fun_level, save_path=footer_save_path)
+        bundle_path = write_archive_bundle(
+            report,
+            archive_root=args.archive_dir,
+            category=args.archive_category,
+            topic_family=args.archive_family,
+            topic_detail=args.archive_topic,
+            run_slug=args.archive_run_slug,
+            summary_text=summary_text,
+            spool_dir=args.archive_spool_dir,
+        )
+        sys.stderr.write(f"[last30days] Archived bundle to {bundle_path}\n")
         sys.stderr.flush()
     print(rendered)
     return 0

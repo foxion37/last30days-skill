@@ -560,6 +560,19 @@ If `--agent` appears in ARGUMENTS (e.g., `/last30days plaud granola --agent`):
 
 Agent mode saves raw research data to `LAST30DAYS_MEMORY_DIR` (defaults to `~/Documents/Last30Days`) automatically via `--save-dir` (handled by the script, no extra tool calls).
 
+For cron/RAG/second-brain pipelines that need a durable evidence bundle instead of one raw markdown file, the engine also supports direct CLI archive-bundle flags:
+
+```bash
+"${LAST30DAYS_PYTHON}" "${SKILL_DIR}/scripts/last30days.py" "$TOPIC" \
+  --emit=compact \
+  --archive-dir="/Volumes/MyNAS/NAS-REPORTS" \
+  --archive-category=repo-intel \
+  --archive-family=agent-tools \
+  --archive-topic="$(echo "$TOPIC" | tr '[:upper:] ' '[:lower:]-')"
+```
+
+Archive bundles contain `raw.json`, `summary.ko.md`, `metadata.json`, and `links.md` under `<archive-root>/<category>/<family>/<topic>/runs/<run-slug>/`. If `--archive-dir` points at a missing `/Volumes/<name>` mount, the engine writes the same folder shape to `--archive-spool-dir` or `~/.last30days/archive-spool` instead of creating a misleading local NAS path.
+
 Agent mode report format:
 
 ```

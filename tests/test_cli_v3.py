@@ -161,6 +161,70 @@ class CliV3Tests(unittest.TestCase):
         _, kwargs = write_text.call_args
         self.assertEqual("utf-8", kwargs.get("encoding"))
 
+    def test_write_archive_bundle_creates_q_friendly_files(self):
+        report = self.make_report()
+        with tempfile.TemporaryDirectory() as tmp:
+            bundle_dir = cli.write_archive_bundle(
+                report,
+                archive_root=tmp,
+                category="repo-intel",
+                topic_family="agent-tools",
+                topic_detail="hermes-agent",
+                run_slug="2026-05-24__pilot",
+                summary_text="요약 본문",
+            )
+            self.assertEqual(
+                Path(tmp).resolve() / "repo-intel" / "agent-tools" / "hermes-agent" / "runs" / "2026-05-24__pilot",
+                bundle_dir,
+            )
+            self.assertEqual(
+                {"raw.json", "summary.ko.md", "metadata.json", "links.md"},
+                {path.name for path in bundle_dir.iterdir()},
+            )
+            self.assertEqual("요약 본문", (bundle_dir / "summary.ko.md").read_text(encoding="utf-8"))
+            raw = json.loads((bundle_dir / "raw.json").read_text(encoding="utf-8"))
+            self.assertEqual("OpenClaw vs NanoClaw", raw["topic"])
+            metadata = json.loads((bundle_dir / "metadata.json").read_text(encoding="utf-8"))
+            self.assertTrue(metadata["archive_root_available"])
+            self.assertEqual("repo-intel", metadata["category"])
+            self.assertEqual("agent-tools", metadata["topic_family"])
+            self.assertEqual("hermes-agent", metadata["topic_detail"])
+
+    def test_write_archive_bundle_spools_missing_nas_volume(self):
+        report = self.make_report()
+        with tempfile.TemporaryDirectory() as spool:
+            missing_nas_root = "/Volumes/__missing_last30days_nas__/NAS-REPORTS"
+            bundle_dir = cli.write_archive_bundle(
+                report,
+                archive_root=missing_nas_root,
+                category="repo-intel",
+                topic_family="agent-tools",
+                topic_detail="hermes-agent",
+                run_slug="2026-05-24__pilot",
+                spool_dir=spool,
+            )
+            self.assertTrue(str(bundle_dir).startswith(str(Path(spool).resolve())))
+            metadata = json.loads((bundle_dir / "metadata.json").read_text(encoding="utf-8"))
+            self.assertFalse(metadata["archive_root_available"])
+            self.assertEqual(missing_nas_root, metadata["intended_archive_root"])
+
+    def test_build_parser_accepts_archive_bundle_options(self):
+        parser = cli.build_parser()
+        args, extra = parser.parse_known_args([
+            "Hermes Agent",
+            "--archive-dir", "/Volumes/NAS/NAS-REPORTS",
+            "--archive-category", "repo-intel",
+            "--archive-family", "agent-tools",
+            "--archive-topic", "hermes-agent",
+            "--archive-run-slug", "2026-05-24__pilot",
+        ])
+        self.assertEqual("/Volumes/NAS/NAS-REPORTS", args.archive_dir)
+        self.assertEqual("repo-intel", args.archive_category)
+        self.assertEqual("agent-tools", args.archive_family)
+        self.assertEqual("hermes-agent", args.archive_topic)
+        self.assertEqual("2026-05-24__pilot", args.archive_run_slug)
+        self.assertEqual([], extra)
+
     def test_compute_save_path_display_uses_posix_slashes_under_home(self):
         # Regression: f"~/{relative}" stringified pathlib.Path with the
         # OS-native separator, producing "~/Documents\\Last30Days\\..." on

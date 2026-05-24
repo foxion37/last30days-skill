@@ -31,7 +31,42 @@ Each run produces one file per topic, slug-named:
 - `--save-dir <path>` - one-off output location.
 - `--save-suffix <name>` - distinguish runs of the same topic (e.g. per client: `--save-suffix=acme`).
 
-The footer line `📎 Raw results saved to ${LAST30DAYS_MEMORY_DIR:-$HOME/Documents/Last30Days}/<slug>-raw.md` is the canonical pointer; if it shows backslashes on Windows update past v3.1.1.
+**Archive bundle output:** for cron, RAG, or second-brain pipelines that need both raw evidence and durable metadata, add `--archive-dir <root>`. The engine writes a run folder with:
+
+```text
+raw.json
+summary.ko.md
+metadata.json
+links.md
+```
+
+Folder shape:
+
+```text
+<archive-root>/<category>/<topic-family>/<topic-detail>/runs/<run-slug>/
+```
+
+Per-run archive knobs:
+
+- `--archive-dir <root>` - archive bundle root.
+- `--archive-category <slug>` - category folder, default `misc`.
+- `--archive-family <slug>` - optional topic-family folder.
+- `--archive-topic <slug>` - topic-detail folder; defaults to the topic slug.
+- `--archive-run-slug <slug>` - run folder; defaults to `YYYY-MM-DD__<topic-slug>`.
+- `--archive-spool-dir <path>` - fallback local spool root when `--archive-dir` points at a missing `/Volumes/<name>` mount. Without this flag, missing `/Volumes` archives spool to `~/.last30days/archive-spool`.
+
+Example:
+
+```bash
+python3 skills/last30days/scripts/last30days.py "Hermes Agent" \
+  --emit=compact \
+  --archive-dir /Volumes/MyNAS/NAS-REPORTS \
+  --archive-category repo-intel \
+  --archive-family agent-tools \
+  --archive-topic hermes-agent
+```
+
+The footer line `📎 Raw results saved to ${LAST30DAYS_MEMORY_DIR:-$HOME/Documents/Last30Days}/<slug>-raw.md` is the canonical pointer for `--save-dir`; archive-bundle runs also print the bundle directory to stderr.
 
 ---
 
